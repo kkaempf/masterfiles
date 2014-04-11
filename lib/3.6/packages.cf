@@ -101,6 +101,37 @@ bundle common debian_knowledge
       "patch_version_regex" string => "^Inst\s+(\S+)\s+.*";
 }
 
+bundle common rpm_knowledge
+# @depends paths
+# @brief common RPM knowledge bundle
+#
+# This common bundle has useful information about RPM.
+{
+  vars:
+      # RPM default package architecture
+      "default_arch" string => $(sys.arch);
+
+      "call_rpm" string => "$(paths.path[rpm])";
+
+      # used with rpm format 'i | repos | %{name} | %{version}-%{release} | %{arch}\n'
+
+      "rpm_name_regex" string => "[^|]+\|[^|]+\|\s+([^\s|]+).*";
+      "rpm_version_regex" string => "[^|]+\|[^|]+\|[^|]+\|\s+([^\s|]+).*";
+      "rpm_arch_regex" string => "[^|]+\|[^|]+\|[^|]+\|[^|]+\|\s+([^\s]+).*";
+
+      # used with rpm format '%{name} %{version}-%{release} %{arch}\n'
+
+      "rpm2_name_regex" string => "^(\S+?)\s\S+?\s\S+$";
+      "rpm2_version_regex" string => "^\S+?\s(\S+?)\s\S+$";
+      "rpm2_arch_regex" string => "^\S+?\s\S+?\s(\S+)$";
+
+      # used with rpm format '%{name}.%{arch} %{version}-%{release}\n'
+
+      "rpm3_name_regex" string => "([^.]+).*";
+      "rpm3_version_regex" string => "[^\s]\s+([^\s]+).*";
+      "rpm3_arch_regex" string => "[^.]+\.([^\s]+).*";
+}
+
 bundle common redhat_knowledge
 # @depends paths
 # @brief common Redhat knowledge bundle
@@ -133,6 +164,18 @@ bundle common redhat_knowledge
       "rpm3_name_regex" string => "([^.]+).*";
       "rpm3_version_regex" string => "[^\s]\s+([^\s]+).*";
       "rpm3_arch_regex" string => "[^.]+\.([^\s]+).*";
+}
+
+bundle common suse_knowledge
+# @depends paths
+# @brief common SUSE knowledge bundle
+#
+# This common bundle has useful information about SUSE.
+{
+  vars:
+      "call_zypper" string => "$(paths.path[zypper])";
+
+      "zypper_options" string => "--quiet";
 }
 
 bundle common darwin_knowledge
@@ -617,7 +660,7 @@ body package_method dpkg_version(repo)
 ##
 
 body package_method rpm_version(repo)
-# @depends common_knowledge redhat_knowledge
+# @depends common_knowledge rpm_knowledge redhat_knowledge suse_knowledge
 # @brief RPM direct installation method
 # @param repo the specific repository for `package_file_repositories`
 #
@@ -632,15 +675,14 @@ body package_method rpm_version(repo)
 {
       package_changes => "individual";
 
-      package_list_command => "$(redhat_knowledge.call_rpm) -qa --queryformat \"i | repos | %{name} | %{version}-%{release} | %{arch}\n\"";
+      package_list_command => "$(rpm_knowledge.call_rpm) -qa --queryformat \"i | repos | %{name} | %{version}-%{release} | %{arch}\n\"";
 
       # set it to "0" to avoid caching of list during upgrade
-      package_list_update_command => "$(redhat_knowledge.call_yum) $(redhat_knowledge.yum_options) check-update";
       package_list_update_ifelapsed => "$(common_knowledge.list_update_ifelapsed)";
 
-      package_list_name_regex    => "$(redhat_knowledge.rpm_name_regex)";
-      package_list_version_regex => "$(redhat_knowledge.rpm_version_regex)";
-      package_list_arch_regex    => "$(redhat_knowledge.rpm_arch_regex)";
+      package_list_name_regex    => "$(rpm_knowledge.rpm_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm_arch_regex)";
 
       package_installed_regex => "i.*";
 
@@ -648,12 +690,16 @@ body package_method rpm_version(repo)
 
       package_name_convention => "$(name)-$(version).$(arch).rpm";
 
-      package_add_command => "$(redhat_knowledge.call_rpm) -ivh ";
-      package_update_command => "$(redhat_knowledge.call_rpm) -Uvh ";
-      package_patch_command => "$(redhat_knowledge.call_rpm) -Uvh ";
-      package_delete_command => "$(redhat_knowledge.call_rpm) -e --nodeps";
-      package_verify_command => "$(redhat_knowledge.call_rpm) -V";
+      package_add_command => "$(rpm_knowledge.call_rpm) -ivh ";
+      package_update_command => "$(rpm_knowledge.call_rpm) -Uvh ";
+      package_patch_command => "$(rpm_knowledge.call_rpm) -Uvh ";
+      package_delete_command => "$(rpm_knowledge.call_rpm) -e --nodeps";
+      package_verify_command => "$(rpm_knowledge.call_rpm) -V";
       package_noverify_regex => ".*[^\s].*";
+    redhat::
+      package_list_update_command => "$(redhat_knowledge.call_yum) $(redhat_knowledge.yum_options) check-update";
+    suse::
+      package_list_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
 }
 
 ##
@@ -882,6 +928,55 @@ body package_method yum_rpm_permissive
       package_verify_command => "$(redhat_knowledge.call_rpm) -V";
 }
 
+body package_method zypper_rpm_permissive
+# @depends common_knowledge rpm_knowledge suse_knowledge
+# @brief Zypper+RPM permissive (just by name) package method
+#
+# This package method interacts with the Zypper and RPM package managers.
+#
+# Copy of yum_rpm which was contributed by Trond Hasle Amundsen
+#
+# This is an efficient package method for RPM-based systems - uses
+# `rpm` instead of `zypper` to list installed packages. It can't delete
+# packages and can't take a target version or architecture, so only
+# the "add" and "addupdate" methods should be used.
+#
+# **Example:**
+#
+# ```cf3
+# packages:
+#     "mypackage" package_method => zypper_rpm_permissive, package_policy => "add";
+# ```
+{
+      package_changes => "bulk";
+      package_list_command => "$(rpm_knowledge.call_rpm) -qa --qf '%{name}.%{arch} %{version}-%{release}\n'";
+      package_patch_list_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
+
+      package_list_name_regex    => "$(rpm_knowledge.rpm3_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm3_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm3_arch_regex)";
+
+      package_installed_regex => ".*";
+      package_name_convention => "$(name)";
+
+      # not needed, same as package_name_convention above
+      package_delete_convention => "$(name)";
+
+      # set it to "0" to avoid caching of list during upgrade
+      package_list_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
+      package_list_update_ifelapsed => "$(common_knowledge.list_update_ifelapsed)";
+
+      package_patch_name_regex    => "([^.]+).*";
+      package_patch_version_regex => "[^\s]\s+([^\s]+).*";
+      package_patch_arch_regex    => "[^.]+\.([^\s]+).*";
+
+      package_add_command    => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive install";
+      package_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive update";
+      package_patch_command  => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive update";
+      package_delete_command => "$(rpm_knowledge.call_rpm) -e --nodeps";
+      package_verify_command => "$(rpm_knowledge.call_rpm) -V";
+}
+
 ##
 
 body package_method yum_rpm_enable_repo(repoid)
@@ -928,6 +1023,52 @@ body package_method yum_rpm_enable_repo(repoid)
       package_patch_command => "$(redhat_knowledge.call_yum) $(redhat_knowledge.yum_options) -y update";
       package_delete_command => "$(redhat_knowledge.call_rpm) -e --nodeps --allmatches";
       package_verify_command => "$(redhat_knowledge.call_rpm) -V";
+}
+
+body package_method zypper_rpm_enable_repo(repoid)
+# @depends common_knowledge rpm_knowledge suse_knowledge
+# @brief Zypper+RPM repo-specific installation method
+# @param repoid the repository name as in `zypper modifyrepo --enable <repoid>`
+#
+# This package method interacts with the RPM package manager for a specific repo.
+#
+# Based on `zypper_rpm()` with addition to enable a repository for the install.
+#
+# Sometimes repositories are configured but disabled by default. For example
+# this pacakge_method could be used when installing a package that exists in
+# the debuginfo repository, which normally you do not want to install packages from.
+#
+# **Example:**
+#
+# ```cf3
+# packages:
+#     "mypackage" package_method => zypper_rpm_enable_repo("myrepo"), package_policy => "add";
+# ```
+{
+      package_changes => "bulk";
+      package_list_command => "$(rpm_knowledge.call_rpm) -qa --qf '%{name} %{version}-%{release} %{arch}\n'";
+      package_patch_list_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
+
+      package_list_name_regex    => "$(rpm_knowledge.rpm2_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm2_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm2_arch_regex)";
+
+      package_installed_regex => ".*";
+      package_name_convention => "$(name)";
+
+      # set it to "0" to avoid caching of list during upgrade
+      package_list_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
+      package_list_update_ifelapsed => "$(common_knowledge.list_update_ifelapsed)";
+
+      package_patch_name_regex    => "([^.]+).*";
+      package_patch_version_regex => "[^\s]\s+([^\s]+).*";
+      package_patch_arch_regex    => "[^.]+\.([^\s]+).*";
+
+      package_add_command    => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) modifyrepo --enable $(repoid); $(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive install";
+      package_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) modifyrepo --enable $(repoid); $(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive update";
+      package_patch_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive update";
+      package_delete_command => "$(rpm_knowledge.call_rpm) -e --nodeps --allmatches";
+      package_verify_command => "$(rpm_knowledge.call_rpm) -V";
 }
 
 ##
@@ -996,10 +1137,73 @@ body package_method yum_group
       package_verify_command          => "$(redhat_knowledge.call_yum) grouplist -v|awk '$0 ~ /^Done$/ {next} {sub(/.*\(/, \"\");sub(/\).*/, \"\")} /Available/ {h=\"a\";next} /Installed/ {h=\"i\";next} h==\"i\"|grep -qx";
 }
 
+body package_method zypper_group
+# @depends common_knowledge rpm_knowledge suse_knowledge
+# @brief RPM direct installation method
+#
+# Makes use of the "groups of packages" (aka patterns) feature of Zypper possible.
+# (`zypper -t pattern install`, `zypper -t pattern remove`)
+#
+# Patterns must be specified by their name, available through `zypper patterns`
+# For example, below `lamp_server` is the pattern name.
+# 
+# ```console
+# $ zypper patterns|grep lamp|head -n 1
+#   | lamp_server                 | 13.1-13.6.1 | openSUSE-13.1-Oss |           
+# ```
+#
+# **Example:**
+#
+# ```cf3
+# Policies examples:
+#
+# -Install "lamp_server" pattern:
+# ----------------------------
+#
+# packages:
+#   "lamp_server"
+#     package_policy   =>  "add",
+#     package_method   =>  zypper_group;
+#
+# -Remove "devel_python" and "devel_perl" groups:
+# -------------------------------------
+#
+# vars:
+#   "groups"  slist  => { "devel_perl", "devel_python" };
+#
+# packages:
+#   "$(groups)"
+#      package_policy   =>   "delete",
+#      package_method   =>   zypper_group;
+# ```
+{
+      package_add_command             =>  "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive -t pattern install";
+      package_changes                 =>  "bulk";
+      package_delete_command          =>  "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) --non-interactive -t pattern remove";
+      package_delete_convention       =>  "$(name)";
+      package_installed_regex         =>  "^i.*";
+
+      # Generate a dpkg -l like listing, "i" means installed, "a" available, and a dummy version 1
+      # See http://superuser.com/questions/428048/what-do-the-outputs-of-dpkg-l-mean for "dpkg -l" sample output
+      package_list_command            =>  "$(suse_knowledge.call_zypper) patterns | uniq | awk -F \| '/^[i ]/ { print $1,$2; }'";
+
+      package_list_name_regex         =>  " |i ([^\s]+)";
+      package_list_update_command     =>  "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
+      package_list_update_ifelapsed   =>  "$(common_knowledge.list_update_ifelapsed)";
+      package_list_version_regex      =>  "(1)";
+      package_name_convention         =>  "$(name)";
+      package_name_regex              =>  "(.*)";
+      package_noverify_returncode     =>  "0";
+      package_update_command          =>  "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) -t pattern update";
+
+      # grep -x to only get full line matching
+      package_verify_command          => "$(suse_knowledge.call_zypper) patterns | uniq | awk -F \| '/^[i ]/ { print $1,$2; }'|grep -qx";
+}
+
 ##
 
 body package_method rpm_filebased(path)
-# @depends common_knowledge redhat_knowledge
+# @depends common_knowledge rpm_knowledge redhat_knowledge suse_knowledge
 # @brief install packages from local filesystem-based RPM repository.
 # @param path the path to the local package repository
 #
@@ -1020,7 +1224,7 @@ body package_method rpm_filebased(path)
       package_file_repositories => { "$(path)" };
       # the above is an addition to Trond's yum_rpm body
 
-      package_add_command => "$(redhat_knowledge.call_rpm) -ihv ";
+      package_add_command => "$(rpm_knowledge.call_rpm) -ihv ";
       # The above is a change from Trond's yum_rpm body, this makes the commands rpm only.
       # The reason I changed the install command from yum to rpm is yum will be default
       # refuse to install the epel-release RPM as it does not have the EPEL GPG key,
@@ -1032,21 +1236,24 @@ body package_method rpm_filebased(path)
       # CFEngine 3 Reference Manual
 
       # set it to "0" to avoid caching of list during upgrade
-      package_list_update_command => "$(redhat_knowledge.call_yum) $(redhat_knowledge.yum_options) check-update";
       package_list_update_ifelapsed => "$(common_knowledge.list_update_ifelapsed)";
 
       # The rest is unchanged from Trond's yum_rpm body
       package_changes => "bulk";
-      package_list_command => "$(redhat_knowledge.call_rpm) -qa --qf '%{name} %{version}-%{release} %{arch}\n'";
+      package_list_command => "$(rpm_knowledge.call_rpm) -qa --qf '%{name} %{version}-%{release} %{arch}\n'";
 
-      package_list_name_regex    => "$(redhat_knowledge.rpm2_name_regex)";
-      package_list_version_regex => "$(redhat_knowledge.rpm2_version_regex)";
-      package_list_arch_regex    => "$(redhat_knowledge.rpm2_arch_regex)";
+      package_list_name_regex    => "$(rpm_knowledge.rpm2_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm2_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm2_arch_regex)";
 
       package_installed_regex => ".*";
 
-      package_delete_command => "$(redhat_knowledge.call_rpm) -e --allmatches";
-      package_verify_command => "$(redhat_knowledge.call_rpm) -V";
+      package_delete_command => "$(rpm_knowledge.call_rpm) -e --allmatches";
+      package_verify_command => "$(rpm_knowledge.call_rpm) -V";
+    redhat::
+      package_list_update_command => "$(redhat_knowledge.call_yum) $(redhat_knowledge.yum_options) check-update";
+    SUSE::
+      package_list_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) list-updates";
 }
 
 ##
@@ -1444,10 +1651,10 @@ body package_method pacman
 
 body package_method zypper
 # @depends paths
-# @depends common_knowledge redhat_knowledge
+# @depends common_knowledge rpm_knowledge suse_knowledge
 # @brief SuSE installation method
 #
-# This package method interacts with the SuSE Zypper package manager
+# This package method interacts with the SUSE Zypper package manager
 #
 # **Example:**
 #
@@ -1461,30 +1668,30 @@ body package_method zypper
       package_list_command => "$(paths.path[rpm]) -qa --queryformat \"i | repos | %{name} | %{version}-%{release} | %{arch}\n\"";
 
       # set it to "0" to avoid caching of list during upgrade
-      package_list_update_command => "$(paths.path[zypper]) list-updates";
+      package_list_update_command => "$(suse_knowledge.call_zypper) list-updates";
       package_list_update_ifelapsed => "$(common_knowledge.list_update_ifelapsed)";
 
-      package_patch_list_command => "$(paths.path[zypper]) patches";
+      package_patch_list_command => "$(suse_knowledge.call_zypper) patches";
       package_installed_regex => "i.*";
-      package_list_name_regex    => "$(redhat_knowledge.rpm_name_regex)";
-      package_list_version_regex => "$(redhat_knowledge.rpm_version_regex)";
-      package_list_arch_regex    => "$(redhat_knowledge.rpm_arch_regex)";
+      package_list_name_regex    => "$(rpm_knowledge.rpm_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm_arch_regex)";
 
       package_patch_installed_regex => ".*Installed.*|.*Not Applicable.*";
       package_patch_name_regex    => "[^|]+\|\s+([^\s]+).*";
       package_patch_version_regex => "[^|]+\|[^|]+\|\s+([^\s]+).*";
 
       package_name_convention => "$(name)";
-      package_add_command => "$(paths.path[zypper]) --non-interactive install";
-      package_delete_command => "$(paths.path[zypper]) --non-interactive remove --force-resolution";
-      package_update_command => "$(paths.path[zypper]) --non-interactive update";
-      package_patch_command => "$(paths.path[zypper]) --non-interactive patch$"; # $ means no args
-      package_verify_command => "$(paths.path[zypper]) --non-interactive verify$";
+      package_add_command    => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) install";
+      package_delete_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) remove --force-resolution";
+      package_update_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) update";
+      package_patch_command  => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) patch$"; # $ means no args
+      package_verify_command => "$(suse_knowledge.call_zypper) $(suse_knowledge.zypper_options) verify$";
 }
 
 body package_method generic
 # @depends paths
-# @depends common_knowledge debian_knowledge redhat_knowledge
+# @depends common_knowledge debian_knowledge rpm_knowledge redhat_knowledge suse_knowledge
 # @brief Generic installation package method
 #
 # This package method attempts to handle all platforms.
@@ -1501,24 +1708,24 @@ body package_method generic
 {
     SuSE::
       package_changes => "bulk";
-      package_list_command => "$(redhat_knowledge.call_rpm) -qa --queryformat \"i | repos | %{name} | %{version}-%{release} | %{arch}\n\"";
+      package_list_command => "$(rpm_knowledge.call_rpm) -qa --queryformat \"i | repos | %{name} | %{version}-%{release} | %{arch}\n\"";
       # set it to "0" to avoid caching of list during upgrade
-      package_list_update_command => "$(paths.path[zypper]) list-updates";
+      package_list_update_command => "$(suse_knowledge.call_zypper) list-updates";
       package_list_update_ifelapsed => "0";
-      package_patch_list_command => "$(paths.path[zypper]) patches";
+      package_patch_list_command => "$(suse_knowledge.call_zypper) patches";
       package_installed_regex => "i.*";
-      package_list_name_regex    => "$(redhat_knowledge.rpm_name_regex)";
-      package_list_version_regex => "$(redhat_knowledge.rpm_version_regex)";
-      package_list_arch_regex    => "$(redhat_knowledge.rpm_arch_regex)";
+      package_list_name_regex    => "$(rpm_knowledge.rpm_name_regex)";
+      package_list_version_regex => "$(rpm_knowledge.rpm_version_regex)";
+      package_list_arch_regex    => "$(rpm_knowledge.rpm_arch_regex)";
       package_patch_installed_regex => ".*Installed.*|.*Not Applicable.*";
       package_patch_name_regex    => "[^|]+\|\s+([^\s]+).*";
       package_patch_version_regex => "[^|]+\|[^|]+\|\s+([^\s]+).*";
       package_name_convention => "$(name)";
-      package_add_command => "$(paths.path[zypper]) --non-interactive install";
-      package_delete_command => "$(paths.path[zypper]) --non-interactive remove --force-resolution";
-      package_update_command => "$(paths.path[zypper]) --non-interactive update";
-      package_patch_command => "$(paths.path[zypper]) --non-interactive patch$"; # $ means no args
-      package_verify_command => "$(paths.path[zypper]) --non-interactive verify$";
+      package_add_command => " install";
+      package_delete_command => "$(suse_knowledge.call_zypper) --non-interactive remove --force-resolution";
+      package_update_command => "$(suse_knowledge.call_zypper) --non-interactive update";
+      package_patch_command => "$(suse_knowledge.call_zypper) --non-interactive patch$"; # $ means no args
+      package_verify_command => "$(suse_knowledge.call_zypper) --non-interactive verify$";
 
     redhat::
       package_changes => "bulk";
@@ -1667,13 +1874,17 @@ bundle agent cfe_package_absent(package)
       package_policy => "delete",
       package_method => apt_get_permissive;
 
-
     redhat::
       "$(package)"
       package_policy => "delete",
       package_method => yum_rpm_permissive;
 
-    !debian.!redhat::
+    SUSE::
+      "$(package)"
+      package_policy => "delete",
+      package_method => zypper_rpm_permissive;
+
+    !debian.!redhat.!SUSE::
       "$(package)"
       package_policy => "delete",
       package_method => generic;
@@ -1707,7 +1918,13 @@ bundle agent cfe_package_present(package)
       package_policy => "add",
       package_method => yum_rpm_permissive;
 
-    !debian.!redhat::
+    SUSE::
+
+      "$(package)"
+      package_policy => "add",
+      package_method => zypper_rpm_permissive;
+
+    !debian.!redhat.!SUSE::
 
       "$(package)"
       package_policy => "add",
@@ -1721,7 +1938,8 @@ bundle agent cfe_package_latest(package)
 #
 # This package method will install `package` or update it to the
 # latest version. On Debian, it will use `apt_get_permissive`. On Red
-# Hat, `yum_rpm_permissive`. Otherwise, `generic`.
+# Hat, `yum_rpm_permissive`. On SUSE, `zypper_rpm_permissive`.
+# Otherwise, `generic`.
 #
 # **Example:**
 #
@@ -1744,7 +1962,14 @@ bundle agent cfe_package_latest(package)
       package_version => "9999999999",
       package_method => yum_rpm_permissive;
 
-    !debian.!redhat::
+    SUSE::
+
+      "$(package)"
+      package_policy => "addupdate",
+      package_version => "9999999999",
+      package_method => zypper_rpm_permissive;
+
+    !debian.!redhat.!SUSE::
 
       "$(package)"
       package_policy => "addupdate",
@@ -1855,7 +2080,7 @@ bundle agent cfe_package_specific(package_name, desired, package_version, packag
 #
 # For convenience on systems where `sys.arch` is not correct, you can
 # use `debian_knowledge.default_arch` and
-# `redhat_knowledge.default_arch`.
+# `redhat_knowledge.default_arch` and `rpm_knowledge.default_arch`
 #
 # **Example:**
 #
@@ -1913,13 +2138,31 @@ bundle agent cfe_package_specific(package_name, desired, package_version, packag
       package_architectures => { $(package_arch) },
       package_method => rpm_version($(dir));
 
-    !filebased.!debian.!redhat::
+    SUSE.!filebased::
+
+      "$(package_name)"
+      package_policy => $(desired),
+      package_select => '>=',
+      package_version => $(package_version),
+      package_architectures => { $(package_arch) },
+      package_method => zypper_rpm;
+
+    SUSE.filebased::
+
+      "$(package_basename)"
+      package_policy => $(desired),
+      package_select => '>=',
+      package_version => $(package_version),
+      package_architectures => { $(package_arch) },
+      package_method => rpm_version($(dir));
+
+    !filebased.!debian.!redhat.!SUSE::
 
       "$(package_name)"
       package_policy => $(desired),
       package_method => generic;
 
   reports:
-    (inform_mode||verbose_mode).filebased.!debian.!redhat::
+    (inform_mode||verbose_mode).filebased.!debian.!redhat.!suse::
       "$(this.bundle): sorry, can't do file-based installs on $(sys.os)";
 }
